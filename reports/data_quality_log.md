@@ -1,7 +1,6 @@
-
 # Data-Quality Log
 
-Checks run on `raw_sales` before building the weekly tables.
+Checks I ran on `raw_sales` before building the weekly tables.
 
 | # | Check | What I found | What I did |
 |---|-------|--------------|------------|
@@ -9,13 +8,16 @@ Checks run on `raw_sales` before building the weekly tables.
 | 2 | Duplicate rows | None | Nothing needed |
 | 3 | Negative sales | None | Nothing needed |
 | 4 | Days with zero sales | Almost every store is closed on Jan 1 | Treated Jan 1 as a closure |
-| 5 | Stores opening late | 8 stores opened after 2013 | Kept them |
-| 6 | Families starting late | 11 families start in 2014, BOOKS in late 2016 | Start analysis in 2015, drop BOOKS |
+| 5 | Stores opening late | 8 stores opened after the data starts | Kept them |
+| 6 | Families starting late | 11 families start in 2014, BOOKS in late 2016 | Started the analysis in 2015, dropped BOOKS |
+| 7 | Short weeks | 2 Christmas weeks only have 6 days | Kept them |
 
 ## Notes
 
 **Jan 1 closures.** 52 or 53 of the 54 stores show zero sales every New Year's Day. The stores were closed, so these zeros aren't real demand.
 
-**Late store openings.** At first, it looked like 8 stores had zero sales on many days in early 2013. It turns out those 8 stores simply hadn't opened yet. The newest one, store 52, opened in April 2017. I kept them because I'm totaling sales by product family, so a new store adds demand rather than creating fake zeros. One thing to keep in mind: an opening can cause a jump in demand that a forecast won't see coming.
+**Late store openings.** At first it looked like 8 stores had zero sales on a lot of days in early 2013. When I checked each store's first sale date, it was the same 8 stores. They just hadn't opened yet. The newest one, store 52, didn't open until April 2017. I kept them because I'm totaling sales by product family, so a new store adds demand instead of creating fake zeros. One thing to keep in mind: an opening can cause a jump in demand that a forecast won't see coming.
 
-**Late-starting families.** 11 families have no sales until around January 2014, and PRODUCE has none until March 2013. BOOKS doesn't start until October 2016. Starting the analysis on Jan 1, 2015 gives every family except BOOKS a full history, and still leaves about 2.5 years of data. I dropped BOOKS because it has less than a year of sales, and my forecasts need at least a year of history to compare against.
+**Late-starting families.** 11 families have no sales until around January 2014, and PRODUCE has none until March 2013, which seemed odd for a grocery store. BOOKS doesn't start until October 2016. Starting the analysis on Jan 5, 2015 (the first full week of the year) gives every family except BOOKS a full history and still leaves about 2.5 years of data. I dropped BOOKS because it only has about 10 months of sales, and my forecasts need at least a year of history to compare against.
+
+**Christmas weeks.** There's no data at all for Dec 25, so the two Christmas weeks (Dec 21, 2015 and Dec 19, 2016) only have 6 days. I left them in since that's normal for a real business.
