@@ -12,6 +12,7 @@ Checks I ran on `raw_sales` before building the weekly tables.
 | 6 | Families starting late | 11 families start in 2014, BOOKS in late 2016 | Started the analysis in 2015, dropped BOOKS |
 | 7 | Short weeks | 2 Christmas weeks only have 6 days | Kept them |
 | 8 | Earthquake and oil gaps | Earthquake listed as events Apr 16 to May 16, 2016; oil missing on weekends and some days | Flagged earthquake weeks from the data, averaged oil per week |
+| 9 | Totals after rolling up to weeks | Weekly and daily totals match (720.2M units, 7.3M promo items); all 32 families have 136 weeks | Nothing needed |
 
 ## Notes
 
@@ -24,3 +25,5 @@ Checks I ran on `raw_sales` before building the weekly tables.
 **Christmas weeks.** There's no data at all for Dec 25, so the two Christmas weeks (Dec 21, 2015 and Dec 19, 2016) only have 6 days. I left them in since that's normal for a real business.
 
 **Earthquake and oil.** I didn't have to guess the earthquake dates. The holidays file lists every day from Apr 16 to May 16, 2016 as "Terremoto Manabi," so I flagged those 6 weeks straight from the data. Oil prices are missing on weekends and a few other days, so I just averaged whatever prices each week had.
+
+**Reconciling.** After building the weekly table, I checked that I didn't lose or double-count anything. Total units match the daily data (about 720 million), apart from a tiny rounding difference way out at the 7th decimal. Promotion totals match exactly, and every family has all 136 weeks.
