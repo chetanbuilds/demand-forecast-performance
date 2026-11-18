@@ -167,6 +167,69 @@ FROM family_class
 GROUP BY abc_class
 ORDER BY abc_class;
 
+-- Lift: how each week compares with the 4 weeks before it, plus event flags.
+-- A promo jump week = promotions more than 1.5x the previous 4-week average (my own cutoff).
+CREATE OR REPLACE TABLE weekly_lift AS
+WITH base AS (
+    SELECT f.family,
+           f.week_start,
+           f.units,
+           f.promo_items,
+           AVG(f.units) OVER (PARTITION BY f.family ORDER BY f.week_start
+                              ROWS BETWEEN 4 PRECEDING AND 1 PRECEDING) AS baseline,
+           AVG(f.promo_items) OVER (PARTITION BY f.family ORDER BY f.week_start
+                              ROWS BETWEEN 4 PRECEDING AND 1 PRECEDING) AS promo_baseline,
+           e.national_holiday,
+           e.national_event,
+           e.payday_in_week,
+           e.earthquake_period
+    FROM weekly_family f
+    JOIN weekly_events e USING (week_start)
+)
+SELECT *,
+       CASE WHEN promo_baseline > 0 AND promo_items > 1.5 * promo_baseline
+            THEN 1 ELSE 0 END AS promo_jump
+FROM base
+WHERE baseline IS NOT NULL;
+
+
+-- Average lift by type of week, all families combined (weighted by volume)
+SELECT 'Holiday week'    AS week_type, COUNT(DISTINCT week_start) AS weeks,
+       ROUND((SUM(units) / SUM(baseline) - 1) * 100, 1) AS lift_pct
+FROM weekly_lift WHERE national_holiday = 1
+UNION ALL
+SELECT 'Event week', COUNT(DISTINCT week_start),
+       ROUND((SUM(units) / SUM(baseline) - 1) * 100, 1)
+FROM weekly_lift WHERE national_event = 1
+UNION ALL
+SELECT 'Payday week', COUNT(DISTINCT week_start),
+       ROUND((SUM(units) / SUM(baseline) - 1) * 100, 1)
+FROM weekly_lift WHERE payday_in_week = 1
+UNION ALL
+SELECT 'Earthquake week', COUNT(DISTINCT week_start),
+       ROUND((SUM(units) / SUM(baseline) - 1) * 100, 1)
+FROM weekly_lift WHERE earthquake_period = 1
+UNION ALL
+SELECT 'Normal week', COUNT(DISTINCT week_start),
+       ROUND((SUM(units) / SUM(baseline) - 1) * 100, 1)
+FROM weekly_lift
+WHERE national_holiday = 0 AND national_event = 0
+  AND payday_in_week = 0 AND earthquake_period = 0;
+
+-- Promo lift by family: lift in promo-jump weeks vs. other weeks
+-- (only families with at least 5 promo-jump weeks, so one-offs don't mislead)
+SELECT family,
+       COUNT(*) FILTER (WHERE promo_jump = 1) AS promo_jump_weeks,
+       ROUND((SUM(units)    FILTER (WHERE promo_jump = 1)
+            / SUM(baseline) FILTER (WHERE promo_jump = 1) - 1) * 100, 1) AS lift_promo_pct,
+       ROUND((SUM(units)    FILTER (WHERE promo_jump = 0)
+            / SUM(baseline) FILTER (WHERE promo_jump = 0) - 1) * 100, 1) AS lift_other_pct
+FROM weekly_lift
+GROUP BY family
+HAVING COUNT(*) FILTER (WHERE promo_jump = 1) >= 5
+ORDER BY lift_promo_pct - lift_other_pct DESC
+LIMIT 10;
+
 -- Note: the May-June 2015 jump I first saw here turned out to be a recording gap.
 -- The check that found it is CHECK 7 in 02_clean.sql; the weekly table now starts Jun 1, 2015.
 
@@ -193,3 +256,11 @@ ORDER BY abc_class;
 -- LAWN AND GARDEN, HOME APPLIANCES) swing mostly because of seasonal spikes, so
 -- forecasts that look at last year should help them most.
 -- Note: these are chain-wide totals; single stores would look much less steady.
+
+-- FINDING 5: At the chain-wide weekly level, events move demand only a little.
+-- Compared with normal weeks, holiday weeks are about 5 points higher, and events,
+-- paydays and the earthquake about 3-4 points. Payday is flagged in almost every other
+-- week, so it's a weak signal at this level.
+-- Promotions matter most for small, non-essential families: SCHOOL AND OFFICE SUPPLIES
+-- (+186%, but promos likely run during back-to-school, so the two are mixed together),
+-- FROZEN FOODS (+25%), HOME AND KITCHEN and BEAUTY (+11-14%). Food staples barely react.
