@@ -1,6 +1,11 @@
 -- =========================================================
 -- 02_clean.sql
 -- Data-quality checks and weekly tables for analysis
+--
+-- Change log
+-- Nov 18, 2026: moved the analysis start from Jan 5, 2015 to Jun 1, 2015.
+--   While checking the demand trend, I found that 7 families (including PRODUCE)
+--   had almost no sales recorded from Jan to May 2015. See CHECK 7 below.
 -- =========================================================
 
 -- CHECK 1: Are any sales or promotion values missing?
@@ -46,9 +51,41 @@ WHERE sales > 0
 GROUP BY family
 ORDER BY first_sale DESC;
 
+-- CHECK 7: Are there stretches where a family has almost no sales?
+-- (weeks under 10% of that family's typical week, from Jan 2015 on)
+WITH weekly AS (
+    SELECT CAST(DATE_TRUNC('week', date) AS DATE) AS week_start,
+           family,
+           SUM(sales) AS units
+    FROM raw_sales
+    WHERE date >= DATE '2015-01-05'
+      AND date <  DATE '2017-08-14'
+      AND family <> 'BOOKS'
+    GROUP BY ALL
+),
+med AS (
+    SELECT family, MEDIAN(units) AS med_units
+    FROM weekly
+    GROUP BY family
+)
+SELECT w.family,
+       COUNT(*)          AS low_weeks,
+       MIN(w.week_start) AS first_low_week,
+       MAX(w.week_start) AS last_low_week
+FROM weekly w
+JOIN med m USING (family)
+WHERE w.units < 0.1 * m.med_units
+GROUP BY w.family
+ORDER BY low_weeks DESC;
+-- Result: 7 families (PRODUCE, CELEBRATION, PET SUPPLIES, PLAYERS AND ELECTRONICS,
+-- SCHOOL AND OFFICE SUPPLIES, LADIESWEAR, and mostly HOME CARE) are near zero
+-- every week from Jan 5 to May 25, 2015, and they all come back the same week.
+-- That looks like a recording gap, not real demand, so the weekly table starts Jun 1, 2015.
+
 -- Weekly demand by product family
--- Starts 2015-01-05 (first full week of 2015), ends before the partial last week
--- BOOKS excluded (less than a year of sales history)
+-- Starts 2015-06-01: Jan-May 2015 has a recording gap in 7 families (see CHECK 7).
+--   I originally started on 2015-01-05.
+-- Ends before the partial last week. BOOKS excluded (less than a year of sales history).
 CREATE OR REPLACE TABLE weekly_family AS
 SELECT
     CAST(DATE_TRUNC('week', date) AS DATE) AS week_start,
@@ -57,7 +94,7 @@ SELECT
     SUM(onpromotion)     AS promo_items,
     COUNT(DISTINCT date) AS days_in_week
 FROM raw_sales
-WHERE date >= DATE '2015-01-05'
+WHERE date >= DATE '2015-06-01'
   AND date <  DATE '2017-08-14'
   AND family <> 'BOOKS'
 GROUP BY ALL;
@@ -154,14 +191,14 @@ SELECT COUNT(*)               AS weeks,
        SUM(payday_in_week)    AS payday_weeks,
        COUNT(oil_price_avg)   AS weeks_with_oil
 FROM weekly_events
-WHERE week_start BETWEEN DATE '2015-01-05' AND DATE '2017-08-07';
+WHERE week_start BETWEEN DATE '2015-06-01' AND DATE '2017-08-07';
 
 -- RECONCILE: Do weekly totals match the daily data for the same period?
 WITH totals AS (
     SELECT
         (SELECT SUM(units) FROM weekly_family) AS weekly_total,
         (SELECT SUM(sales) FROM raw_sales
-         WHERE date >= DATE '2015-01-05'
+         WHERE date >= DATE '2015-06-01'
            AND date <  DATE '2017-08-14'
            AND family <> 'BOOKS')            AS daily_total
 )
@@ -170,12 +207,19 @@ SELECT weekly_total,
        ROUND(weekly_total - daily_total, 2) AS difference
 FROM totals;
 
+-- RECONCILE: Do weekly promotion totals match too?
+SELECT
+    (SELECT SUM(promo_items) FROM weekly_family) AS weekly_promo,
+    (SELECT SUM(onpromotion) FROM raw_sales
+     WHERE date >= DATE '2015-06-01'
+       AND date <  DATE '2017-08-14'
+       AND family <> 'BOOKS')                  AS daily_promo;
 
 
-
--- Does every family have all 136 weeks?
+-- Does every family have all 115 weeks?
 SELECT family, COUNT(*) AS weeks
 FROM weekly_family
 GROUP BY family
-HAVING COUNT(*) <> 136;
+HAVING COUNT(*) <> 115;
+
 
