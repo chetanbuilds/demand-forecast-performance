@@ -1,18 +1,21 @@
+
 -- =========================================================
 -- 03_demand.sql
--- Demand analysis: ranking, trend, seasonality, volatility, events
+-- Getting to know the demand before forecasting it:
+-- which families matter, trend, seasonality, how predictable, events
 -- =========================================================
 
--- Which families drive most of the demand? (ABC classes)
+-- which families make up most of the demand? (ABC)
+-- A = top 80% of units, B = next 15%, C = the rest
 CREATE OR REPLACE TABLE family_abc AS
 WITH totals AS (
-    -- total units per family over the whole period
+    -- total units per family
     SELECT family, SUM(units) AS total_units
     FROM weekly_family
     GROUP BY family
 ),
 ranked AS (
-    -- each family's share, and the running share from biggest to smallest
+    -- each family's share + running total from biggest to smallest
     SELECT *,
         total_units / SUM(total_units) OVER () AS share,
         SUM(total_units) OVER (ORDER BY total_units DESC
@@ -27,7 +30,7 @@ SELECT *,
          ELSE 'C' END                       AS abc_class
 FROM ranked;
 
--- See the ranking
+-- the ranking
 SELECT volume_rank, family, abc_class,
        ROUND(total_units)        AS total_units,
        ROUND(share * 100, 1)     AS share_pct,
@@ -35,24 +38,27 @@ SELECT volume_rank, family, abc_class,
 FROM family_abc
 ORDER BY volume_rank;
 
--- How many families in each class?
+-- how many in each class
 SELECT abc_class, COUNT(*) AS families
 FROM family_abc
 GROUP BY abc_class
 ORDER BY abc_class;
+-- Only 4 families (GROCERY I, BEVERAGES, PRODUCE, CLEANING) are 74.5% of all demand.
+-- DAIRY is right on the line: with it the total hits 80.3%, so it just misses A and lands in B.
+-- GROCERY I + BEVERAGES alone are about half. The 21 smallest families are only ~5% together.
+-- So a miss on GROCERY I matters way more than a miss on MAGAZINES.
 
-
--- Is demand growing year over year? (average units per week, so years are comparable)
--- Careful: 2015 is Jun-Dec only and 2017 is Jan-Aug only, so the monthly
--- year-over-year growth below is the better comparison.
+-- is demand growing? (avg units per week so years with fewer weeks are still comparable)
 SELECT YEAR(week_start)           AS year,
        COUNT(DISTINCT week_start) AS weeks,
        ROUND(SUM(units) / COUNT(DISTINCT week_start)) AS avg_weekly_units
 FROM weekly_family
 GROUP BY YEAR(week_start)
 ORDER BY year;
+-- careful with this one: 2015 is only Jun-Dec and 2017 is only Jan-Aug,
+-- so the monthly comparison below is more fair.
 
--- Monthly trend with growth vs. the same month last year
+-- monthly trend + growth vs same month last year
 WITH monthly AS (
     SELECT DATE_TRUNC('month', week_start)          AS month,
            SUM(units) / COUNT(DISTINCT week_start)  AS avg_weekly_units
@@ -66,13 +72,18 @@ SELECT CAST(month AS DATE)      AS month,
                                 AS yoy_growth_pct
 FROM monthly
 ORDER BY month;
+-- Pretty flat in the 2nd half of 2016 (0-7% over 2015), then it picks up in 2017
+-- (about 8-18% over 2016). December is the busiest month both years.
+-- April 2017 shows a small drop but that's only because April 2016 was boosted by the earthquake.
+-- (When I first ran this starting in Jan 2015, demand "jumped" 33% from May to June.
+-- That turned out to be a recording gap, not real demand. CHECK 7 in 02_clean.sql
+-- is how I found it, and it's why the weekly table starts Jun 1, 2015 now.)
 
-
--- Seasonality: how busy is each month compared with an average month? (2016 only,
--- the one full calendar year, so growth between years doesn't mix in)
+-- seasonality: how busy is each month vs an average month? (100 = normal)
+-- only using 2016 since it's the one full year, so growth doesn't mess up the pattern
 CREATE OR REPLACE TABLE seasonality_2016 AS
 WITH monthly AS (
-    -- average week in each month, per family
+    -- avg week in each month, per family
     SELECT family,
            MONTH(week_start) AS month_num,
            AVG(units)        AS avg_weekly_units
@@ -81,7 +92,7 @@ WITH monthly AS (
     GROUP BY family, MONTH(week_start)
 ),
 yearly AS (
-    -- average week across all of 2016, per family
+    -- avg week across all of 2016, per family
     SELECT family, AVG(units) AS year_avg
     FROM weekly_family
     WHERE YEAR(week_start) = 2016
@@ -94,7 +105,7 @@ SELECT m.family,
 FROM monthly m
 JOIN yearly y USING (family);
 
--- Seasonal index by month for the 5 biggest families (100 = average month)
+-- top 5 families, one column per month
 SELECT s.family,
        MAX(seasonal_index) FILTER (WHERE month_num = 1)  AS jan,
        MAX(seasonal_index) FILTER (WHERE month_num = 2)  AS feb,
@@ -113,9 +124,12 @@ JOIN family_abc a USING (family)
 WHERE a.volume_rank <= 5
 GROUP BY s.family
 ORDER BY s.family;
+-- The big families don't swing that much (GROCERY I 92-124, DAIRY only 95-107).
+-- Weird thing: GROCERY I and BEVERAGES both spike in April. That's not normal for groceries.
+-- It's the 2016 earthquake (people stocking up), not real seasonality.
+-- Problem: any forecast that copies last year will probably overshoot April 2017. (It did, see 05_accuracy.sql.)
 
-
--- Peak month, slowest month, and how big the swing is, for every family
+-- peak month, slowest month, and how big the swing is for every family
 SELECT family,
        ARG_MAX(month_num, seasonal_index) AS peak_month,
        MAX(seasonal_index)                AS peak_index,
@@ -125,10 +139,12 @@ SELECT family,
 FROM seasonality_2016
 GROUP BY family
 ORDER BY swing DESC;
+-- December is the peak for most families. Biggest swings are all small families:
+-- FROZEN FOODS sells ~4x a normal month in December, SCHOOL AND OFFICE SUPPLIES ~3x in August
+-- (back to school).
 
-
--- How predictable is each family? CV = standard deviation / average of weekly units.
--- XYZ cutoffs (0.25 and 0.50) are a common rule of thumb, not a fixed rule.
+-- how predictable is each family? CV = std dev / avg of weekly units (lower = steadier)
+-- X under 0.25, Y 0.25-0.50, Z over 0.50 (common rule of thumb, not a hard rule)
 CREATE OR REPLACE TABLE family_class AS
 WITH vol AS (
     SELECT family,
@@ -148,17 +164,16 @@ SELECT a.family,
             ELSE 'Z' END                          AS xyz_class,
        a.abc_class || CASE WHEN v.cv < 0.25 THEN 'X'
                            WHEN v.cv < 0.50 THEN 'Y'
-                           ELSE 'Z' END           AS abc_xyz
+                           ELSE 'Z' END           AS abc_xyz   -- || glues the two letters, e.g. 'AX'
 FROM family_abc a
 JOIN vol v USING (family);
 
--- Every family with its size class, predictability class, and CV
+-- every family with its classes
 SELECT family, abc_xyz, ROUND(cv, 2) AS cv, volume_rank
 FROM family_class
 ORDER BY abc_class, cv;
 
-
--- How many families fall in each ABC-XYZ cell?
+-- ABC-XYZ grid
 SELECT abc_class,
        COUNT(*) FILTER (WHERE xyz_class = 'X') AS x_steady,
        COUNT(*) FILTER (WHERE xyz_class = 'Y') AS y_variable,
@@ -166,9 +181,16 @@ SELECT abc_class,
 FROM family_class
 GROUP BY abc_class
 ORDER BY abc_class;
+-- Every A and B family is steady (X, CV under 0.16). PRODUCE is the steadiest (0.07),
+-- makes sense, people buy fruit and veggies every week.
+-- The only jumpy ones are small families, ~2% of demand total. The Z ones
+-- (SCHOOL AND OFFICE SUPPLIES, FROZEN FOODS, LAWN AND GARDEN, HOME APPLIANCES) are
+-- jumpy mostly because of seasonal spikes, so looking at last year should help them.
+-- These are totals across all 54 stores though. One store on its own would be way less steady.
 
--- Lift: how each week compares with the 4 weeks before it, plus event flags.
--- A promo jump week = promotions more than 1.5x the previous 4-week average (my own cutoff).
+-- lift: how much each week is above/below the 4 weeks before it, + event flags
+-- promo jump = promos more than 1.5x the last 4 weeks (my own cutoff)
+-- (05_accuracy.sql reuses this table)
 CREATE OR REPLACE TABLE weekly_lift AS
 WITH base AS (
     SELECT f.family,
@@ -190,10 +212,9 @@ SELECT *,
        CASE WHEN promo_baseline > 0 AND promo_items > 1.5 * promo_baseline
             THEN 1 ELSE 0 END AS promo_jump
 FROM base
-WHERE baseline IS NOT NULL;
+WHERE baseline IS NOT NULL;   -- first week of each family has nothing to compare to
 
-
--- Average lift by type of week, all families combined (weighted by volume)
+-- lift by type of week, all families together (big ones count more)
 SELECT 'Holiday week'    AS week_type, COUNT(DISTINCT week_start) AS weeks,
        ROUND((SUM(units) / SUM(baseline) - 1) * 100, 1) AS lift_pct
 FROM weekly_lift WHERE national_holiday = 1
@@ -215,9 +236,13 @@ SELECT 'Normal week', COUNT(DISTINCT week_start),
 FROM weekly_lift
 WHERE national_holiday = 0 AND national_event = 0
   AND payday_in_week = 0 AND earthquake_period = 0;
+-- Compare to normal weeks (-2.5%), not to 0. Normal weeks come out negative because
+-- their last 4 weeks usually include some holiday or payday bump.
+-- Holidays are about 5 points above normal, events/paydays/earthquake about 3-4.
+-- So at the whole-chain, whole-week level, events don't move demand that much.
+-- Payday shows up in almost every other week, so it can't really tell busy weeks apart.
 
--- Promo lift by family: lift in promo-jump weeks vs. other weeks
--- (only families with at least 5 promo-jump weeks, so one-offs don't mislead)
+-- promo lift by family (only families with 5+ promo jump weeks so one-offs don't count)
 SELECT family,
        COUNT(*) FILTER (WHERE promo_jump = 1) AS promo_jump_weeks,
        ROUND((SUM(units)    FILTER (WHERE promo_jump = 1)
@@ -229,38 +254,7 @@ GROUP BY family
 HAVING COUNT(*) FILTER (WHERE promo_jump = 1) >= 5
 ORDER BY lift_promo_pct - lift_other_pct DESC
 LIMIT 10;
-
--- Note: the May-June 2015 jump I first saw here turned out to be a recording gap.
--- The check that found it is CHECK 7 in 02_clean.sql; the weekly table now starts Jun 1, 2015.
-
-
--- FINDING 1: 4 families (GROCERY I, BEVERAGES, PRODUCE, CLEANING) make up 74.5% of demand.
--- DAIRY is right on the edge: adding it brings the total to 80.3%, so it lands in class B.
--- GROCERY I and BEVERAGES alone are 51%. The 21 smallest families together are about 5%.
-
--- FINDING 2: Demand was nearly flat in the second half of 2016 (0-7% over 2015),
--- then picked up in 2017 (about 8-18% over 2016). December is the peak month both years.
--- April 2017 looks slightly down only because April 2016 was boosted during the earthquake.
-
--- FINDING 3: The big families are fairly steady through the year (GROCERY I swings
--- from 92 to 124, DAIRY only 95 to 107, where 100 = an average month). December is
--- the main peak for most families. The biggest swings are in small families:
--- FROZEN FOODS sells about 4x an average month in December, and SCHOOL AND OFFICE
--- SUPPLIES about 3x in August (back to school).
--- Watch out: GROCERY I and BEVERAGES spike in April 2016 because of the earthquake,
--- not normal seasonality. A forecast that copies last year will likely overshoot April 2017.
-
--- FINDING 4: All 11 A and B families are steady (class X, CV under 0.16), and
--- PRODUCE is the steadiest (0.07). The only Y and Z families are small ones, about
--- 2% of demand together. The Z families (SCHOOL AND OFFICE SUPPLIES, FROZEN FOODS,
--- LAWN AND GARDEN, HOME APPLIANCES) swing mostly because of seasonal spikes, so
--- forecasts that look at last year should help them most.
--- Note: these are chain-wide totals; single stores would look much less steady.
-
--- FINDING 5: At the chain-wide weekly level, events move demand only a little.
--- Compared with normal weeks, holiday weeks are about 5 points higher, and events,
--- paydays and the earthquake about 3-4 points. Payday is flagged in almost every other
--- week, so it's a weak signal at this level.
--- Promotions matter most for small, non-essential families: SCHOOL AND OFFICE SUPPLIES
--- (+186%, but promos likely run during back-to-school, so the two are mixed together),
--- FROZEN FOODS (+25%), HOME AND KITCHEN and BEAUTY (+11-14%). Food staples barely react.
+-- All top 10 are small, non-food families. SCHOOL AND OFFICE SUPPLIES is +186% but
+-- promos probably run during back-to-school, so I can't separate the promo from the season.
+-- FROZEN FOODS +25%, HOME AND KITCHEN and BEAUTY +11-14%.
+-- Food staples barely react to promos, people buy groceries every week anyway.
